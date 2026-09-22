@@ -46,6 +46,10 @@ func llamaServerDiscoverDevices(ctx context.Context, libDirs []string, extraEnvs
 		slog.Debug("llama-server not available for device discovery", "error", err)
 		return nil, status, err
 	}
+	// Development wrappers may resolve llama-server outside Ollama's normal
+	// lib/ollama layout. Include its directory so native probing can load the
+	// matching ggml-base and GPU backend libraries.
+	libDirs = appendLlamaServerDir(libDirs, llamaServer)
 
 	start := time.Now()
 	defer func() {
@@ -162,6 +166,16 @@ func llamaServerDiscoverDevices(ctx context.Context, libDirs []string, extraEnvs
 
 	llamaOutput := string(listOutput) + "\n" + strings.Join(stderrLines, "\n")
 	return parseLlamaServerDevicesWithNative(llamaOutput, nativeStderr, libDirs, nativeDevices), status, nil
+}
+
+func appendLlamaServerDir(libDirs []string, llamaServer string) []string {
+	dir := filepath.Dir(llamaServer)
+	for _, existing := range libDirs {
+		if existing == dir {
+			return libDirs
+		}
+	}
+	return append([]string{dir}, libDirs...)
 }
 
 func llamaServerDiscoveryOutput(ctx context.Context) io.Writer {

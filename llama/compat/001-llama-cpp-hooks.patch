@@ -40,14 +40,6 @@ index df8313e81..29ccb0f85 100644
              // make sure there is no duplicated tensor names
              if (weights_map.find(tensor_name) != weights_map.end()) {
                  throw std::runtime_error(format("invalid model: tensor '%s' is duplicated", ggml_get_name(cur)));
-@@ -1380,6 +1390,7 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
- 
- void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
-     const auto & w = require_weight(ggml_get_name(cur));
-+    if (llama_ollama_compat::maybe_load_text_tensor(this, cur, w.offs)) return;
- 
-     if (use_mmap) {
-         const auto & mapping = mappings.at(w.idx);
 @@ -1530,6 +1541,7 @@ bool llama_model_loader::load_all_data(
          }
  

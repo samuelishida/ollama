@@ -64,6 +64,21 @@ components:
         num_predict:
           type: integer
           description: Maximum number of tokens to generate
+        draft_num_predict:
+          type: integer
+          description: Maximum number of speculative draft tokens per step
+        draft_spec_type:
+          type: string
+          description: Comma-separated speculative decoding implementations
+        draft_ngram_mod_n_match:
+          type: integer
+          description: Number of recent tokens used by ngram-mod matching
+        draft_ngram_mod_n_min:
+          type: integer
+          description: Minimum prompt length before ngram-mod is used
+        draft_ngram_mod_n_max:
+          type: integer
+          description: Maximum ngram-mod draft length
       additionalProperties: true
     GenerateRequest:
       type: object

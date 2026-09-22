@@ -2503,6 +2503,56 @@ func TestAppendDraftArgs(t *testing.T) {
 			want:      []string{"base", "--spec-type", "draft-dflash", "--spec-draft-n-max", "4", "--spec-draft-model", "draft.gguf"},
 		},
 		{
+			name:      "ngram-only speculator ignores configured draft model",
+			draftType: draftTypeDFlash,
+			draftPath: "draft.gguf",
+			opts: api.Options{Runner: api.Runner{
+				DraftNumPredict:     8,
+				DraftSpecType:       "ngram-mod",
+				DraftNgramModNMatch: 24,
+				DraftNgramModNMin:   1,
+				DraftNgramModNMax:   8,
+			}},
+			want: []string{
+				"base", "--spec-type", "ngram-mod", "--spec-draft-n-max", "8",
+				"--spec-ngram-mod-n-match", "24", "--spec-ngram-mod-n-min", "1", "--spec-ngram-mod-n-max", "8",
+			},
+		},
+		{
+			name:      "DFlash plus ngram-mod uses configured ngram parameters",
+			draftType: draftTypeDFlash,
+			draftPath: "draft.gguf",
+			opts: api.Options{Runner: api.Runner{
+				DraftNumPredict:     4,
+				DraftSpecType:       "draft-dflash,ngram-mod",
+				DraftNgramModNMatch: 24,
+				DraftNgramModNMin:   48,
+				DraftNgramModNMax:   64,
+			}},
+			want: []string{
+				"base", "--spec-type", "draft-dflash,ngram-mod", "--spec-draft-n-max", "4",
+				"--spec-draft-model", "draft.gguf",
+				"--spec-ngram-mod-n-match", "24", "--spec-ngram-mod-n-min", "48", "--spec-ngram-mod-n-max", "64",
+			},
+		},
+		{
+			name:      "DFlash plus ngram-map-k4v uses configured map parameters",
+			draftType: draftTypeDFlash,
+			draftPath: "draft.gguf",
+			opts: api.Options{Runner: api.Runner{
+				DraftNumPredict:         4,
+				DraftSpecType:           "draft-dflash,ngram-map-k4v",
+				DraftNgramMapK4VN:       12,
+				DraftNgramMapK4VM:       48,
+				DraftNgramMapK4VMinHits: 1,
+			}},
+			want: []string{
+				"base", "--spec-type", "draft-dflash,ngram-map-k4v", "--spec-draft-n-max", "4",
+				"--spec-draft-model", "draft.gguf",
+				"--spec-ngram-map-k4v-size-n", "12", "--spec-ngram-map-k4v-size-m", "48", "--spec-ngram-map-k4v-min-hits", "1",
+			},
+		},
+		{
 			name:      "zero draft depth disables speculative decoding",
 			draftType: draftTypeDFlash,
 			draftPath: "draft.gguf",
@@ -2953,6 +3003,24 @@ func TestMemoryParsingWriter(t *testing.T) {
 			},
 			wantGPU:   1100 + 2200 + 330 + 10 + 20,
 			wantTotal: 1100 + 2200 + 330 + 440 + 10 + 20,
+		},
+		{
+			name: "base and draft buffers are both retained",
+			lines: []string{
+				"load_tensors: offloaded 66/66 layers to GPU\n",
+				"load_tensors:        Vulkan0 model buffer size = 16128.00 MiB\n",
+				"llama_kv_cache:      Vulkan0 KV buffer size = 4896.00 MiB\n",
+				"sched_reserve:       Vulkan0 compute buffer size = 276.28 MiB\n",
+				"common_speculative_init_result: loading draft model 'draft.gguf'\n",
+				"load_tensors: offloaded 6/6 layers to GPU\n",
+				"load_tensors:        Vulkan0 model buffer size = 1079.61 MiB\n",
+				"llama_kv_cache:      Vulkan0 KV buffer size = 50.00 MiB\n",
+				"sched_reserve:       Vulkan0 compute buffer size = 537.18 MiB\n",
+				"srv  llama_server: model loaded\n",
+				"sched_reserve:       Vulkan0 compute buffer size = 316.40 MiB\n",
+			},
+			wantGPU:   16128 + 4896 + 316.40 + 1079.61 + 50 + 537.18,
+			wantTotal: 16128 + 4896 + 316.40 + 1079.61 + 50 + 537.18,
 		},
 		{
 			name: "rc21 fit probe accounting",
@@ -3693,6 +3761,22 @@ func TestFindLlamaServer(t *testing.T) {
 	// In the test environment, it may or may not exist depending on whether
 	// cmake was run. Just verify it doesn't panic.
 	_ = err
+}
+
+func TestFindLlamaServerConfigured(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "llama-server")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OLLAMA_LLAMA_SERVER", path)
+
+	got, err := FindLlamaServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path {
+		t.Fatalf("FindLlamaServer() = %q, want %q", got, path)
+	}
 }
 
 func loadTestGGML(t *testing.T, kv ggml.KV) *ggml.GGML {

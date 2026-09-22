@@ -586,13 +586,20 @@ type Options struct {
 
 // Runner options which must be set when the model is loaded into memory
 type Runner struct {
-	NumCtx          int   `json:"num_ctx,omitempty"`
-	NumBatch        int   `json:"num_batch,omitempty"`
-	NumGPU          int   `json:"num_gpu,omitempty"`
-	MainGPU         *int  `json:"main_gpu,omitempty"`
-	UseMMap         *bool `json:"use_mmap,omitempty"`
-	NumThread       int   `json:"num_thread,omitempty"`
-	DraftNumPredict int   `json:"draft_num_predict,omitempty"`
+	NumCtx                  int    `json:"num_ctx,omitempty"`
+	NumBatch                int    `json:"num_batch,omitempty"`
+	NumGPU                  int    `json:"num_gpu,omitempty"`
+	MainGPU                 *int   `json:"main_gpu,omitempty"`
+	UseMMap                 *bool  `json:"use_mmap,omitempty"`
+	NumThread               int    `json:"num_thread,omitempty"`
+	DraftNumPredict         int    `json:"draft_num_predict,omitempty"`
+	DraftSpecType           string `json:"draft_spec_type,omitempty"`
+	DraftNgramModNMatch     int    `json:"draft_ngram_mod_n_match,omitempty"`
+	DraftNgramModNMin       int    `json:"draft_ngram_mod_n_min,omitempty"` // Minimum draft tokens, not prompt length.
+	DraftNgramModNMax       int    `json:"draft_ngram_mod_n_max,omitempty"`
+	DraftNgramMapK4VN       int    `json:"draft_ngram_map_k4v_size_n,omitempty"`
+	DraftNgramMapK4VM       int    `json:"draft_ngram_map_k4v_size_m,omitempty"`
+	DraftNgramMapK4VMinHits int    `json:"draft_ngram_map_k4v_min_hits,omitempty"`
 }
 
 // EmbedRequest is the request passed to [Client.Embed].
