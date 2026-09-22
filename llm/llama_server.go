@@ -36,6 +36,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -340,6 +341,13 @@ func (s *llamaServerRunner) ContextLength() int {
 // FindLlamaServer locates the llama-server binary in lib/ollama/.
 // There is a single binary that dynamically loads GPU backends at runtime.
 func FindLlamaServer() (string, error) {
+	if configured := os.Getenv("OLLAMA_LLAMA_SERVER"); configured != "" {
+		info, err := os.Stat(configured)
+		if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+			return "", fmt.Errorf("OLLAMA_LLAMA_SERVER is not an executable: %s", configured)
+		}
+		return configured, nil
+	}
 	path, candidates, err := findLlamaCppBinary("llama-server", defaultLlamaCppBinarySearch())
 	if err != nil {
 		return "", fmt.Errorf("llama-server binary not found (checked: %s). Run 'cmake -S llama/server --preset cpu && cmake --build --preset cpu' first", strings.Join(candidates, ", "))
@@ -799,27 +807,65 @@ func appendContextShiftArgs(params []string, opts api.Options, enabled bool) []s
 }
 
 const (
-	draftTypeMTP    = "draft-mtp"
-	draftTypeDFlash = "draft-dflash"
+	draftTypeMTP         = "draft-mtp"
+	draftTypeDFlash      = "draft-dflash"
+	draftTypeNgramMod    = "ngram-mod"
+	draftTypeNgramMapK4V = "ngram-map-k4v"
 )
 
 func appendDraftArgs(params []string, draftType, draftModelPath string, opts api.Options) []string {
-	if draftType == "" {
-		return params
-	}
 	if opts.DraftNumPredict <= 0 {
 		return params
 	}
 
-	params = append(params, "--spec-type", draftType)
+	specType := draftType
+	if opts.DraftSpecType != "" {
+		specType = opts.DraftSpecType
+	}
+	if specType == "" {
+		return params
+	}
+
+	params = append(params, "--spec-type", specType)
 	params = append(params, "--spec-draft-n-max", strconv.Itoa(opts.DraftNumPredict))
-	if draftType == draftTypeMTP {
+	if hasSpecType(specType, draftTypeMTP) {
 		params = append(params, "--spec-draft-backend-sampling")
 	}
-	if draftModelPath != "" {
+	if draftModelPath != "" && (hasSpecType(specType, draftTypeMTP) || hasSpecType(specType, draftTypeDFlash)) {
 		params = append(params, "--spec-draft-model", draftModelPath)
 	}
+	if hasSpecType(specType, draftTypeNgramMod) {
+		if opts.DraftNgramModNMatch > 0 {
+			params = append(params, "--spec-ngram-mod-n-match", strconv.Itoa(opts.DraftNgramModNMatch))
+		}
+		if opts.DraftNgramModNMin > 0 {
+			params = append(params, "--spec-ngram-mod-n-min", strconv.Itoa(opts.DraftNgramModNMin))
+		}
+		if opts.DraftNgramModNMax > 0 {
+			params = append(params, "--spec-ngram-mod-n-max", strconv.Itoa(opts.DraftNgramModNMax))
+		}
+	}
+	if hasSpecType(specType, draftTypeNgramMapK4V) {
+		if opts.DraftNgramMapK4VN > 0 {
+			params = append(params, "--spec-ngram-map-k4v-size-n", strconv.Itoa(opts.DraftNgramMapK4VN))
+		}
+		if opts.DraftNgramMapK4VM > 0 {
+			params = append(params, "--spec-ngram-map-k4v-size-m", strconv.Itoa(opts.DraftNgramMapK4VM))
+		}
+		if opts.DraftNgramMapK4VMinHits > 0 {
+			params = append(params, "--spec-ngram-map-k4v-min-hits", strconv.Itoa(opts.DraftNgramMapK4VMinHits))
+		}
+	}
 	return params
+}
+
+func hasSpecType(specType, wanted string) bool {
+	for _, typ := range strings.Split(specType, ",") {
+		if strings.TrimSpace(typ) == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func externalDraftType(path string) (string, error) {
@@ -1141,6 +1187,10 @@ func (s *llamaServerRunner) resetLoadAccounting() {
 	}
 	for k := range s.systemFreeAtLoad {
 		delete(s.systemFreeAtLoad, k)
+	}
+	if s.output != nil {
+		s.output.buffers = nil
+		s.output.modelPhase = ""
 	}
 	if s.status != nil {
 		s.status.SetLastError("")
@@ -2816,15 +2866,17 @@ func PredictServerVRAM(modelPath string, f *gguf.Model, numCtx int) uint64 {
 //	MTL0_Mapped model buffer size =  1918.35 MiB
 //	ROCm0 model buffer size =  1918.35 MiB
 type memoryParsingWriter struct {
-	inner   io.Writer
-	runner  *llamaServerRunner
-	buffers map[memoryBufferKey]memoryBuffer
+	inner      io.Writer
+	runner     *llamaServerRunner
+	buffers    map[memoryBufferKey]memoryBuffer
+	modelPhase string
 }
 
 type memoryBufferKey struct {
 	component string
 	backend   string
 	kind      string
+	model     string
 }
 
 type memoryBuffer struct {
@@ -2845,7 +2897,45 @@ var bufferSizeRegex = regexp.MustCompile(`(?m)(?:^|\n)[^\n:]*?([A-Za-z_][A-Za-z0
 var (
 	offloadedLayersRegex      = regexp.MustCompile(`offloaded\s+(\d+)/(\d+)\s+layers to GPU`)
 	fitOverflowingLayersRegex = regexp.MustCompile(`common_params_fit_impl:\s+-\s+.+:\s+\d+\s+layers\s+\(\s*(\d+)\s+overflowing\)`)
+	draftModelRegex           = regexp.MustCompile(`loading draft model`)
+	mainModelLoadedRegex      = regexp.MustCompile(`llama_server:\s+model loaded`)
 )
+
+const (
+	mainModelPhase  = "main"
+	draftModelPhase = "draft"
+)
+
+type modelPhaseEvent struct {
+	offset int
+	phase  string
+}
+
+func (w *memoryParsingWriter) phaseEvents(b []byte) []modelPhaseEvent {
+	events := make([]modelPhaseEvent, 0)
+	for _, match := range draftModelRegex.FindAllIndex(b, -1) {
+		events = append(events, modelPhaseEvent{offset: match[0], phase: draftModelPhase})
+	}
+	for _, match := range mainModelLoadedRegex.FindAllIndex(b, -1) {
+		events = append(events, modelPhaseEvent{offset: match[0], phase: mainModelPhase})
+	}
+	sort.SliceStable(events, func(i, j int) bool { return events[i].offset < events[j].offset })
+	return events
+}
+
+func (w *memoryParsingWriter) phaseAt(events []modelPhaseEvent, offset int) string {
+	phase := w.modelPhase
+	if phase == "" {
+		phase = mainModelPhase
+	}
+	for _, event := range events {
+		if event.offset > offset {
+			break
+		}
+		phase = event.phase
+	}
+	return phase
+}
 
 // isGPUBuffer returns true if the backend buffer name represents GPU memory.
 // CPU, BLAS, and host-pinned buffers (*_Host) are not GPU memory.
@@ -2882,6 +2972,7 @@ func (w *memoryParsingWriter) Write(b []byte) (int, error) {
 		func() {
 			w.runner.memoryMu.Lock()
 			defer w.runner.memoryMu.Unlock()
+			events := w.phaseEvents(b)
 
 			if match := deviceFreeRegex.FindSubmatch(b); match != nil {
 				devName := string(match[1])
@@ -2889,34 +2980,43 @@ func (w *memoryParsingWriter) Write(b []byte) (int, error) {
 					w.runner.systemFreeAtLoad[devName] = mib * 1024 * 1024
 				}
 			}
-			for _, match := range offloadedLayersRegex.FindAllSubmatch(b, -1) {
-				loaded, loadedErr := strconv.ParseUint(string(match[1]), 10, 64)
-				total, totalErr := strconv.ParseUint(string(match[2]), 10, 64)
+			for _, match := range offloadedLayersRegex.FindAllSubmatchIndex(b, -1) {
+				if w.phaseAt(events, match[0]) == draftModelPhase {
+					continue
+				}
+				loaded, loadedErr := strconv.ParseUint(string(b[match[2]:match[3]]), 10, 64)
+				total, totalErr := strconv.ParseUint(string(b[match[4]:match[5]]), 10, 64)
 				if loadedErr == nil && totalErr == nil {
 					w.runner.gpuLayers = loaded
 					w.runner.totalLayers = total
 				}
 			}
-			for _, match := range fitOverflowingLayersRegex.FindAllSubmatch(b, -1) {
-				overflowing, err := strconv.ParseUint(string(match[1]), 10, 64)
+			for _, match := range fitOverflowingLayersRegex.FindAllSubmatchIndex(b, -1) {
+				if w.phaseAt(events, match[0]) == draftModelPhase {
+					continue
+				}
+				overflowing, err := strconv.ParseUint(string(b[match[2]:match[3]]), 10, 64)
 				if err == nil && overflowing > 0 {
 					w.runner.gpuLayerOverflow += int(overflowing)
 				}
 			}
-			for _, match := range bufferSizeRegex.FindAllSubmatch(b, -1) {
-				backendName := string(match[2])
-				if mib, err := strconv.ParseFloat(string(match[4]), 64); err == nil {
+			for _, match := range bufferSizeRegex.FindAllSubmatchIndex(b, -1) {
+				phase := w.phaseAt(events, match[0])
+				backendName := string(b[match[4]:match[5]])
+				if mib, err := strconv.ParseFloat(string(b[match[8]:match[9]]), 64); err == nil {
 					if w.buffers == nil {
 						w.buffers = make(map[memoryBufferKey]memoryBuffer)
 					}
 					w.buffers[memoryBufferKey{
-						component: string(match[1]),
+						component: string(b[match[2]:match[3]]),
 						backend:   backendName,
-						kind:      string(match[3]),
+						kind:      string(b[match[6]:match[7]]),
+						model:     phase,
 					}] = memoryBuffer{bytes: uint64(mib * 1024 * 1024)}
 					w.updateRunnerMemoryLocked()
 				}
 			}
+			w.modelPhase = w.phaseAt(events, len(b))
 		}()
 	}
 	return w.inner.Write(b)

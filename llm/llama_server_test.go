@@ -3776,6 +3776,22 @@ func TestFindLlamaServer(t *testing.T) {
 	_ = err
 }
 
+func TestFindLlamaServerConfigured(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "llama-server")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OLLAMA_LLAMA_SERVER", path)
+
+	got, err := FindLlamaServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path {
+		t.Fatalf("FindLlamaServer() = %q, want %q", got, path)
+	}
+}
+
 func loadTestGGUF(t *testing.T, kv gguftest.KV) *gguf.Model {
 	t.Helper()
 

@@ -104,6 +104,229 @@ curl http://localhost:11434/api/chat -d '{
 
 See the [API documentation](https://docs.ollama.com/api) for all endpoints.
 
+## Custom speculative decoding build
+
+This checkout contains an optional custom Go wrapper that forwards llama.cpp speculative-decoding settings. It uses an existing native `llama-server` payload; rebuilding the Go wrapper does not rebuild that native payload.
+
+Hardware used for validation: Radeon RX 7900 XTX 24 GB, i5-12600K, 48 GB DDR4. Launcher default is custom API `127.0.0.1:11434`; comparison example below keeps system Ollama on `127.0.0.1:11434` and moves custom Ollama to `127.0.0.1:11435`.
+
+### Build and select custom server
+
+From repository root:
+
+```shell
+scripts/ollama-ngram.sh check
+scripts/ollama-ngram.sh build                 # fast Go-wrapper rebuild
+scripts/ollama-ngram.sh build --full          # Go wrapper + Vulkan llama-server
+
+OLLAMA_NGRAM_HOST=127.0.0.1:11435 \
+OLLAMA_NGRAM_SYSTEM_HOST=127.0.0.1:11434 \
+OLLAMA_NGRAM_GPU_MASK=1 \
+scripts/ollama-ngram.sh start-custom
+```
+
+`build --full` runs the repository CMake superbuild, using Vulkan for the RX
+7900 XTX, and writes the wrapper to `build/ollama-ngram`. It also builds the
+native `llama-server` under `build/lib/ollama/` and Vulkan backend under
+`build/lib/ollama/vulkan/`. Full-build parallelism and
+paths can be changed with `OLLAMA_NGRAM_BUILD_JOBS`,
+`OLLAMA_NGRAM_CMAKE_BUILD_DIR`, and `OLLAMA_NGRAM_PAYLOAD_PREFIX`. The full
+build currently supports only `OLLAMA_NGRAM_CMAKE_BACKENDS=vulkan`; the Go
+override is forwarded through `OLLAMA_NGRAM_GO_BIN`.
+
+After a successful full build, the native payload path is persisted in the
+launcher state directory and selected automatically by later `check` and
+`start-custom` calls. Set `OLLAMA_NGRAM_LLAMA_SERVER` to use an explicit
+payload instead.
+
+Useful lifecycle commands:
+
+```shell
+scripts/ollama-ngram.sh status
+scripts/ollama-ngram.sh logs
+scripts/ollama-ngram.sh stop
+scripts/ollama-ngram.sh stop-custom
+scripts/ollama-ngram.sh sync-clients
+```
+
+Set `OLLAMA_NGRAM_LLAMA_SERVER` to select another native payload. `check` must report speculative options including `--spec-type` and `--spec-ngram-map-k4v-size-n`. `start-custom` writes lifecycle state and logs under `$XDG_STATE_HOME/ollama-ngram`.
+
+Take over system port `11434` permanently:
+
+```shell
+scripts/ollama-ngram.sh takeover
+```
+
+`takeover` disables the `ollama` systemd service, starts the custom build on
+`127.0.0.1:11434`, writes and enables the user unit `ollama-ngram.service` so the
+same build owns the port again after reboot or login, and re-points the pi client
+config (`providers.ollama.baseUrl` in `~/.pi/agent/models.json`) at the live port.
+If the custom server fails to start, the systemd service is re-enabled, so the port
+is never left unowned.
+
+The first `takeover` needs permission to stop the `ollama` systemd service (a single
+`sudo` password prompt). Check the result with `scripts/ollama-ngram.sh status` and
+`systemctl --user status ollama-ngram`. The instance started by `takeover` runs in the
+launcher's own session; the user unit adopts the port at the next login or reboot, or
+immediately with `systemctl --user restart ollama-ngram`. To hand `11434` back to stock
+Ollama, run `scripts/ollama-ngram.sh use-system`, which disables the user unit and
+re-enables the systemd service.
+
+Keep custom and system on separate ports when comparing builds. Any client that
+hardcodes the custom port has to be re-pointed when you switch, so run
+`scripts/ollama-ngram.sh sync-clients` after changing `OLLAMA_NGRAM_HOST`. A stale
+client port (for example `11435` left behind after returning to `11434`) surfaces as
+`Error: Connection error. Retry failed after 3 attempts: Connection error.`
+
+### Swift Qwen3.8 DFlash2 + map-k4v
+
+Published local tags:
+
+```text
+smtek/Swift-Qwen3.8-27B:latest     # clean Q4_K_M baseline
+smtek/Swift-Qwen3.8-27B:Q4_K_M     # clean Q4_K_M baseline
+smtek/Swift-Qwen3.8-27B:map-k4v    # embedded MTP3 + map-k4v n=12
+smtek/Swift-Qwen3.8-27B:dflash2    # DFlash2 width 7 + map-k4v n=24
+smtek/Swift-Qwen3.8-27B:dflash     # compatibility alias for dflash2
+smtek/Qwen3.8-27B:map-k4v         # map-k4v n=12
+smtek/Qwen3.8-27B-AD:map-k4v      # embedded MTP3 + map-k4v n=12
+smtek/BigBang-v1:map-k4v          # map-k4v n=12
+smtek/BigBang-v1:dflash2          # Qwen3.5-compatible DFlash2 + map-k4v n=12
+```
+
+Published speculative configuration:
+
+```text
+draft_spec_type             draft-mtp,ngram-map-k4v
+draft_num_predict           3
+draft_ngram_map_k4v_size_n  12
+draft_ngram_map_k4v_size_m  48
+draft_ngram_map_k4v_min_hits 1
+```
+
+`map-k4v` MTP tag keeps `size_n=12`. Optimized `dflash2` tag uses DFlash2
+width 7 with `size_n=24`, `size_m=48`, `min_hits=1`.
+BigBang `:dflash2` uses its compatible Qwen3.5 DFlash2 head with width 7 and
+map `size_n=12`.
+
+Publish-ready instructions: [Swift Qwen3.8 DFlash2 + map-k4v](docs/ollama-qwen3.8-map-k4v.md).
+
+Stock Ollama does not forward speculative map-k4v parameters. Use custom build
+for both speculative tags; stock remains valid for clean Q4_K_M baseline.
+
+MTP3 + map request options:
+
+```json
+{
+  "options": {
+    "draft_num_predict": 3,
+    "draft_spec_type": "draft-mtp,ngram-map-k4v",
+    "draft_ngram_map_k4v_size_n": 12,
+    "draft_ngram_map_k4v_size_m": 48,
+    "draft_ngram_map_k4v_min_hits": 1
+  }
+}
+```
+
+Use custom API explicitly:
+
+```shell
+OLLAMA_HOST=127.0.0.1:11435 \
+build/ollama-ngram run smtek/Swift-Qwen3.8-27B:map-k4v
+```
+
+DFlash2 + map:
+
+```shell
+OLLAMA_HOST=127.0.0.1:11435 \
+build/ollama-ngram run smtek/Swift-Qwen3.8-27B:dflash2
+```
+
+Or call API directly:
+
+```shell
+curl http://127.0.0.1:11435/api/chat -d '{
+  "model": "smtek/Swift-Qwen3.8-27B:map-k4v",
+  "messages": [{"role": "user", "content": "Continue this code."}],
+  "think": false,
+  "stream": false,
+  "options": {"temperature": 0, "num_predict": 256}
+}'
+```
+
+Confirm persisted configuration:
+
+```shell
+OLLAMA_HOST=127.0.0.1:11435 \
+build/ollama-ngram show --modelfile smtek/Swift-Qwen3.8-27B:map-k4v | grep '^PARAMETER draft_'
+```
+
+### Short 64K agentic validation
+
+Two agentic coding turns, 128 output tokens per turn, 50K-token repository
+snapshot, 65,536-token context, q4_0 K/V cache, batch 256, one cold run per
+arm, greedy seed 42, RX 7900 XTX Vulkan device 1. No `ngram-mod` route was
+configured.
+
+| Family | Best tested arm | Aggregate tok/s | Speedup | Parity |
+|---|---|---:|---:|---|
+| Qwen3.8 base | map n=12 | 39.94 | 1.48x | PASS |
+| Qwen3.8-AD | MTP3 + map n=12 | 61.06 | 2.01x | PASS |
+| BigBang-v1 | map n=12 | **102.41** | **1.10x** | PASS |
+| BigBang-v1 | DFlash2 + map n=12/24/32 | 56.10–60.62 | 0.60–0.65x | FAIL |
+| Swift | DFlash2 + map n=12 | 57.95 | 1.91x | PASS |
+
+Map n=12/24/32 was tested on every family. Swift MTP3 + map was faster in this
+short run (`64.26` tok/s at n=12) but failed exact output-hash parity; Swift
+DFlash2 n=12 and n=24 passed, while n=32 failed. AD DFlash2 arms failed strict
+parity. Thus DFlash2 and MTP3 are approximately equal only for prior matched
+width-3/map-n=12, 32K/f16 testing; equality is not established for this new
+64K/q4_0 protocol. Prior Swift DFlash2 width-7/map-n=24 result (`136.63` tok/s,
+`4.47x`) remains 32K/f16 evidence. It does not prove a 64K `3x` result.
+
+Full reports and raw rows: [QwenBench short matrix](../QwenBench/README.md#short-64k-agentic-map-k4v-matrix),
+[Swift/AD report](../QwenBench/artifacts/agentic-map-matrix-20260916-202312.md),
+[base/BigBang report](../QwenBench/artifacts/agentic-map-matrix-20260916-205437.md),
+[BigBang DFlash2 report](../QwenBench/artifacts/agentic-map-matrix-20260916-213546.md),
+[runner](../QwenBench/scripts/bench_agentic_map_matrix.py).
+
+BigBang `:dflash2` now exists and loads with a Qwen3.5-compatible DFlash2
+Q4_K_M head from [Anbeeld/Qwen3.5-35B-A3B-DFlash-GGUF](https://huggingface.co/Anbeeld/Qwen3.5-35B-A3B-DFlash-GGUF).
+The Qwen3.8 DFlash2 head was rejected: it aborts in
+`llama_model_dflash::build_norm` against BigBang's `qwen35moe` architecture.
+The compatible tag activates both `draft-dflash` and `ngram-map-k4v`, but is
+not promoted: all tested DFlash2 arms failed strict output parity and ran below
+baseline. Use `smtek/BigBang-v1:map-k4v` for the validated winner.
+
+Inspect optimized DFlash2 configuration:
+
+```shell
+OLLAMA_HOST=127.0.0.1:11435 \
+build/ollama-ngram show --modelfile smtek/Swift-Qwen3.8-27B:dflash2 | grep '^PARAMETER draft_'
+```
+
+For new tags on a filesystem supporting normal Unix permissions, create a Modelfile with the same `FROM`, `DRAFT`, and `PARAMETER` values, then run:
+
+```shell
+OLLAMA_HOST=127.0.0.1:11435 \
+build/ollama-ngram create smtek/my-model:map-k4v -f Modelfile
+```
+
+Current model store is exFAT. Its existing blobs reject `chmod`, and custom creation also requires a `llama-quantize` binary for GGUF validation. In this setup, reuse active tags above or move model storage to ext4 and provide native quantization tools before creating new tags.
+
+### Validate route and speed
+
+```shell
+python3 ../QwenBench/scripts/bench_swift_map_k4v.py \
+  --host 127.0.0.1:11435 --repeats 2 --context 32768 --tokens 256
+```
+
+Fresh 512-token matrix result: baseline `30.59` eval tok/s; MTP3 + map n=12
+`120.82` (`3.95x`); DFlash2 width 7 + map n=24 `136.63` (`4.47x`). All 26
+requests had identical output SHA-256 and active route counters. Direct
+`:dflash2` tag validation measured `138.22` tok/s median. Full evidence:
+[QwenBench DFlash2 matrix](../QwenBench/artifacts/swift-dflash2-matrix-20260916-193556.md).
+
 ### Python
 
 ```
