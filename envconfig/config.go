@@ -219,7 +219,12 @@ var (
 	// DebugLogRequests logs inference requests to disk for replay/debugging.
 	DebugLogRequests = Bool("OLLAMA_DEBUG_LOG_REQUESTS")
 	// KvCacheType is the quantization type for the K/V cache.
+	// OLLAMA_KV_CACHE_TYPE sets both K and V; OLLAMA_KV_CACHE_K / _V
+	// override them individually (useful when FA is off: quantized V
+	// requires flash attention, but quantized K does not).
 	KvCacheType = String("OLLAMA_KV_CACHE_TYPE")
+	KvCacheKType = String("OLLAMA_KV_CACHE_K_TYPE")
+	KvCacheVType = String("OLLAMA_KV_CACHE_V_TYPE")
 	// NoHistory disables readline history.
 	NoHistory = Bool("OLLAMA_NOHISTORY")
 	// NoPrune disables pruning of model blobs on startup.
@@ -317,6 +322,8 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_GO_TEMPLATE":          {"OLLAMA_GO_TEMPLATE", GoTemplate(true), "Enable Modelfile TEMPLATE based rendering when available"},
 		"OLLAMA_FLASH_ATTENTION":      {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
 		"OLLAMA_KV_CACHE_TYPE":        {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
+		"OLLAMA_KV_CACHE_K_TYPE":      {"OLLAMA_KV_CACHE_K_TYPE", KvCacheKType(), "Quantization type for the K cache (default: follow OLLAMA_KV_CACHE_TYPE)"},
+		"OLLAMA_KV_CACHE_V_TYPE":      {"OLLAMA_KV_CACHE_V_TYPE", KvCacheVType(), "Quantization type for the V cache (default: follow OLLAMA_KV_CACHE_TYPE)"},
 		"OLLAMA_GPU_OVERHEAD":         {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
 		"OLLAMA_IGPU_ENABLE":          {"OLLAMA_IGPU_ENABLE", String("OLLAMA_IGPU_ENABLE")(), "Enable integrated GPUs"},
 		"LLAMA_ARG_FIT":               {"LLAMA_ARG_FIT", String("LLAMA_ARG_FIT")(), "Enable llama.cpp automatic fit of unset memory options (default \"on\")"},

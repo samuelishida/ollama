@@ -2568,6 +2568,13 @@ func TestAppendDraftArgs(t *testing.T) {
 			want:      []string{"base", "--spec-type", "draft-dflash", "--spec-draft-n-max", "4", "--spec-draft-model", "draft.gguf"},
 		},
 		{
+			name:      "DSpark draft forwards native draft model",
+			draftType: draftTypeDSpark,
+			draftPath: "draft.gguf",
+			opts:      api.Options{Runner: api.Runner{DraftNumPredict: 7}},
+			want:      []string{"base", "--spec-type", "draft-dspark", "--spec-draft-n-max", "7", "--spec-draft-model", "draft.gguf"},
+		},
+		{
 			name:      "zero draft depth disables speculative decoding",
 			draftType: draftTypeDFlash,
 			draftPath: "draft.gguf",
@@ -2581,6 +2588,52 @@ func TestAppendDraftArgs(t *testing.T) {
 			got := appendDraftArgs([]string{"base"}, tt.draftType, tt.draftPath, tt.opts)
 			if !slices.Equal(got, tt.want) {
 				t.Fatalf("appendDraftArgs = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppendKVCacheArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		combined string
+		k, v     string
+		want     []string
+	}{
+		{
+			name: "no cache type set leaves defaults",
+			want: []string{"base"},
+		},
+		{
+			name:     "combined OLLAMA_KV_CACHE_TYPE applies to both K and V",
+			combined: "q8_0",
+			want:     []string{"base", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"},
+		},
+		{
+			name: "K-only override with combined unset leaves V at llama.cpp default",
+			k:    "q8_0",
+			want: []string{"base", "--cache-type-k", "q8_0"},
+		},
+		{
+			name:     "V-only override falls back K to combined",
+			combined: "f16",
+			v:        "q8_0",
+			want:     []string{"base", "--cache-type-k", "f16", "--cache-type-v", "q8_0"},
+		},
+		{
+			name:     "per-side overrides win over combined",
+			combined: "f16",
+			k:        "q8_0",
+			v:        "q8_0",
+			want:     []string{"base", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := appendKVCacheArgs([]string{"base"}, tt.combined, tt.k, tt.v)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("appendKVCacheArgs = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -183,6 +183,8 @@ type llamaServerLaunchConfig struct {
 	opts                 api.Options
 	numParallel          int
 	kvCacheType          string
+	kvCacheKType         string
+	kvCacheVType         string
 	embedding            bool
 	config               LlamaServerConfig
 	gpus                 []ml.DeviceInfo
@@ -401,10 +403,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 
 	params = appendLoadModeArgs(params, launch.opts, launch.gpus)
 
-	// KV cache type
-	if launch.kvCacheType != "" {
-		params = append(params, "--cache-type-k", launch.kvCacheType, "--cache-type-v", launch.kvCacheType)
-	}
+	params = appendKVCacheArgs(params, launch.kvCacheType, launch.kvCacheKType, launch.kvCacheVType)
 
 	params = appendFlashAttentionArgs(params, launch.gpus)
 
@@ -621,6 +620,28 @@ func LlamaServerFlashAttention(gpus []ml.DeviceInfo) ml.FlashAttentionType {
 	return ml.FlashAttentionAuto
 }
 
+// appendKVCacheArgs appends --cache-type-k/--cache-type-v flags.
+// k/v (from OLLAMA_KV_CACHE_K_TYPE / OLLAMA_KV_CACHE_V_TYPE) override the
+// combined type (OLLAMA_KV_CACHE_TYPE) independently; empty values fall back
+// to the combined type, and a side with neither is left at the llama-server
+// default. This matters because a quantized V cache requires flash attention
+// in llama.cpp while a quantized K cache does not.
+func appendKVCacheArgs(params []string, combined, k, v string) []string {
+	if k == "" {
+		k = combined
+	}
+	if v == "" {
+		v = combined
+	}
+	if k != "" {
+		params = append(params, "--cache-type-k", k)
+	}
+	if v != "" {
+		params = append(params, "--cache-type-v", v)
+	}
+	return params
+}
+
 func appendFlashAttentionArgs(params []string, gpus []ml.DeviceInfo) []string {
 	switch LlamaServerFlashAttention(gpus) {
 	case ml.FlashAttentionEnabled:
@@ -809,6 +830,7 @@ func appendContextShiftArgs(params []string, opts api.Options, enabled bool) []s
 const (
 	draftTypeMTP         = "draft-mtp"
 	draftTypeDFlash      = "draft-dflash"
+	draftTypeDSpark      = "draft-dspark"
 	draftTypeNgramMod    = "ngram-mod"
 	draftTypeNgramMapK4V = "ngram-map-k4v"
 )
@@ -831,7 +853,7 @@ func appendDraftArgs(params []string, draftType, draftModelPath string, opts api
 	if hasSpecType(specType, draftTypeMTP) {
 		params = append(params, "--spec-draft-backend-sampling")
 	}
-	if draftModelPath != "" && (hasSpecType(specType, draftTypeMTP) || hasSpecType(specType, draftTypeDFlash)) {
+	if draftModelPath != "" && (hasSpecType(specType, draftTypeMTP) || hasSpecType(specType, draftTypeDFlash) || hasSpecType(specType, draftTypeDSpark)) {
 		params = append(params, "--spec-draft-model", draftModelPath)
 	}
 	if hasSpecType(specType, draftTypeNgramMod) {
@@ -904,6 +926,8 @@ func NewLlamaServerRunner(
 	opts api.Options,
 	numParallel int,
 	kvCacheType string,
+	kvCacheKType string,
+	kvCacheVType string,
 	config LlamaServerConfig,
 ) (LlamaServer, error) {
 	// Check if this is an embedding model
@@ -988,6 +1012,8 @@ func NewLlamaServerRunner(
 		opts:         opts,
 		numParallel:  numParallel,
 		kvCacheType:  kvCacheType,
+		kvCacheKType: kvCacheKType,
+		kvCacheVType: kvCacheVType,
 		embedding:    isEmbedding,
 		config:       config,
 		gpus:         slices.Clone(gpus),
